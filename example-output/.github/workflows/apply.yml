@@ -1,0 +1,68 @@
+# ---------------------------------------------------------------------------
+# NOTE: To enable this workflow the user must provide a `github_repo` and
+# create the OIDC apply role (vars.TF_APPLY_ROLE_ARN). See plan.yml header.
+# Until then this workflow exists but won't be wired to a real IAM identity.
+# ---------------------------------------------------------------------------
+
+name: terraform-apply
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "envs/**"
+      - "modules/**"
+      - "src/**"
+      - ".github/workflows/apply.yml"
+  workflow_dispatch:
+    inputs:
+      env:
+        description: "Which env to apply"
+        required: true
+        type: choice
+        options: [dev, prod]
+        default: dev
+
+permissions:
+  id-token: write
+  contents: read
+
+concurrency:
+  group: tf-apply-${{ github.event.inputs.env || 'dev' }}
+  cancel-in-progress: false
+
+jobs:
+  apply:
+    name: apply
+    runs-on: ubuntu-latest
+    environment: ${{ github.event.inputs.env || 'dev' }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: 1.7.5
+          terraform_wrapper: false
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Configure AWS credentials (OIDC)
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ vars.TF_APPLY_ROLE_ARN }}
+          aws-region: ${{ vars.AWS_REGION }}
+
+      - name: terraform init
+        working-directory: envs/${{ github.event.inputs.env || 'dev' }}
+        run: |
+          terraform init -reconfigure \
+            -backend-config="bucket=${{ vars.TF_STATE_BUCKET }}" \
+            -backend-config="region=${{ vars.AWS_REGION }}" \
+            -backend-config="dynamodb_table=${{ vars.TF_STATE_LOCK }}"
+
+      - name: terraform apply
+        working-directory: envs/${{ github.event.inputs.env || 'dev' }}
+        run: terraform apply -auto-approve

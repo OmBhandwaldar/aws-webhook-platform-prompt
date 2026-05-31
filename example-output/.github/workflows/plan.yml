@@ -1,0 +1,98 @@
+# ---------------------------------------------------------------------------
+# NOTE: To enable this workflow you must:
+#   1. Provide a `github_repo` (org/repo) in the OIDC trust policy.
+#      The user skipped this during generation, so the IAM role below
+#      (vars.TF_PLAN_ROLE_ARN) is NOT created by the Terraform in this repo.
+#      Create it manually using the AWS-recommended GitHub OIDC pattern,
+#      or extend modules/ with an `oidc/` module that wires it up.
+#   2. Set repository variables:
+#        TF_PLAN_ROLE_ARN  arn:aws:iam::<acct>:role/<role-for-plan>
+#        AWS_REGION        us-east-1
+#        TF_STATE_BUCKET   webhook-platform-tfstate-<acct>-us-east-1
+#        TF_STATE_LOCK     webhook-platform-tfstate-lock
+# ---------------------------------------------------------------------------
+
+name: terraform-plan
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - "envs/**"
+      - "modules/**"
+      - "src/**"
+      - ".github/workflows/plan.yml"
+
+permissions:
+  id-token: write
+  contents: read
+  pull-requests: write
+
+concurrency:
+  group: tf-plan-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  plan:
+    name: plan (${{ matrix.env }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        env: [dev, prod]
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: 1.7.5
+          terraform_wrapper: false
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Configure AWS credentials (OIDC)
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ vars.TF_PLAN_ROLE_ARN }}
+          aws-region: ${{ vars.AWS_REGION }}
+
+      - name: terraform fmt
+        run: terraform fmt -check -recursive
+
+      - name: terraform init
+        working-directory: envs/${{ matrix.env }}
+        run: |
+          terraform init -reconfigure \
+            -backend-config="bucket=${{ vars.TF_STATE_BUCKET }}" \
+            -backend-config="region=${{ vars.AWS_REGION }}" \
+            -backend-config="dynamodb_table=${{ vars.TF_STATE_LOCK }}"
+
+      - name: terraform validate
+        working-directory: envs/${{ matrix.env }}
+        run: terraform validate
+
+      - name: tflint
+        uses: terraform-linters/setup-tflint@v4
+        with:
+          tflint_version: latest
+      - run: tflint --recursive
+
+      - name: checkov
+        uses: bridgecrewio/checkov-action@v12
+        with:
+          directory: .
+          framework: terraform
+          quiet: true
+          soft_fail: false
+
+      - name: terraform plan
+        working-directory: envs/${{ matrix.env }}
+        run: terraform plan -no-color -out=tfplan
+
+      - name: post plan summary
+        if: always()
+        working-directory: envs/${{ matrix.env }}
+        run: terraform show -no-color tfplan >> $GITHUB_STEP_SUMMARY || true
