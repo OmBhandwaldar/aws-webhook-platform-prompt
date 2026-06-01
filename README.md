@@ -16,6 +16,10 @@ This prompt closes that gap. Hand it to any modern AI coding agent and you get a
 
 ## What the prompt generates
 
+![X-Ray trace map](screenshots/01-xray-trace-map.png)
+
+*Live X-Ray trace from the deployed system. Full designed architecture below:*
+
 ```
 Provider (Stripe / GitHub / Slack / custom)
    │  HTTPS POST
